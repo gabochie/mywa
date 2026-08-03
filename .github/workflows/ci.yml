@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package (zero-dependency)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps -e .
+
+      - name: Generate synthetic test data
+        run: python tools/make_testdata.py
+
+      - name: Run unit tests (unittest)
+        run: python -m unittest discover -s tests -v
+
+      - name: Smoke test the pipeline on testdata
+        run: |
+          python -m mywa -i testdata --opportunity-groups "real estate, wholesale, founders" --out /tmp/mywa_out --dry-run
+          test -f /tmp/mywa_out/.dry_run_flag || python -m mywa -i testdata -o /tmp/mywa_out
+
+      - name: Verify packaged outputs
+        run: |
+          ls -la /tmp/mywa_out
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Byte-compile all sources
+        run: python -m compileall -q mywa tests tools

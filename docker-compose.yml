@@ -1,0 +1,161 @@
+# =====================================================================
+# One compose stack: mywa (pipeline + dashboard)  +  OpenClaw  +  Hermes
+#   mywa     -> pipeline CLI + dashboard      : http://localhost:8123
+#   OpenClaw -> gateway / control UI          : http://localhost:18789
+#   Hermes   -> dashboard + OpenAI-compatible : http://localhost:9119 , :8642/v1
+#
+# Data bind mount point to your existing outreach stack so the AI agents
+# keep their exact state/config (no data loss on migration).
+#
+# Usage:
+#   cp C:\AI\SALES\Outreach-main\docker\.env .env      # reuse your API keys/tokens
+#   docker compose --profile ai up -d                   # app + openclaw + hermes
+#   docker compose up -d                                 # app only
+#   docker compose --profile tools run --rm mywa-run     # re-extract contacts
+# =====================================================================
+
+name: mywa
+
+# Reach the existing remote-agents network (from the outreach project).
+networks:
+  agents:
+    name: outreach-agents_agents
+    external: true
+
+services:
+  # -------------------------------------------------------------
+  # mywa app: pipeline + web dashboard
+  # -------------------------------------------------------------
+  mywa:
+    build: .
+    image: mywa
+    container_name: mywa
+    entrypoint: ["python", "-m", "mywa.server"]
+    command: ["--out", "/data/real_out", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "8123:8080"
+    volumes:
+      - ./contacts:/data/contacts
+      - ./real_out:/data/real_out
+      - ./state:/data/state
+    environment:
+      - PYTHONIOENCODING=utf-8
+      - MYWA_STATE=/data/state
+    restart: unless-stopped
+
+  mywa-run:
+    build: .
+    image: mywa
+    container_name: mywa-run
+    profiles: ["tools"]
+    volumes:
+      - ./contacts:/data/contacts
+      - ./real_out:/data/real_out
+    command: ["-i", "/data/contacts", "-o", "/data/real_out"]
+
+  # -------------------------------------------------------------
+  # OpenClaw gateway (uses your local image + existing data dirs)
+  # -------------------------------------------------------------
+  openclaw-gateway:
+    image: ${OPENCLAW_IMAGE:-openclaw:local-sandbox}
+    container_name: openclaw-gateway
+    profiles: ["ai"]
+    group_add:
+      - "${DOCKER_GID:-0}"
+    init: true
+    restart: unless-stopped
+    cap_drop: [NET_RAW, NET_ADMIN]
+    security_opt: [no-new-privileges:true]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    command: ["node", "dist/index.js", "gateway", "--bind", "${OPENCLAW_GATEWAY_BIND:-lan}", "--port", "18789"]
+    environment:
+      HOME: /home/node
+      OPENCLAW_HOME: /home/node
+      TERM: xterm-256color
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+      OPENCLAW_CONFIG_DIR: /home/node/.openclaw
+      OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      OPENCLAW_DISABLE_BONJOUR: 1
+      TZ: ${OPENCLAW_TZ:-UTC}
+      OLLAMA_API_KEY: ollama-local
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - "${OPENCLAW_CONFIG_DIR:-C:/AI/SALES/Outreach-main/docker/data/openclaw-config}:/home/node/.openclaw"
+      - "${OPENCLAW_WORKSPACE_DIR:-C:/AI/SALES/Outreach-main/docker/data/openclaw-workspace}:/home/node/.openclaw/workspace"
+      - "${OPENCLAW_AUTH_PROFILE_SECRET_DIR:-C:/AI/SALES/Outreach-main/docker/data/openclaw-auth-secrets}:/home/node/.config/openclaw"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    ports:
+      - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+      - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
+      - "${OPENCLAW_MSTEAMS_PORT:-3978}:3978"
+    networks:
+      - agents
+
+  # OpenClaw CLI sidecar (admin: docker compose --profile ai run --rm openclaw-cli onboard)
+  openclaw-cli:
+    image: ${OPENCLAW_IMAGE:-openclaw:local-sandbox}
+    container_name: openclaw-cli
+    profiles: ["ai"]
+    network_mode: "service:openclaw-gateway"
+    group_add: ["${DOCKER_GID:-0}"]
+    init: true
+    stdin_open: true
+    tty: true
+    cap_drop: [NET_RAW, NET_ADMIN]
+    security_opt: [no-new-privileges:true]
+    entrypoint: ["node", "dist/index.js"]
+    depends_on:
+      - openclaw-gateway
+    environment:
+      HOME: /home/node
+      OPENCLAW_HOME: /home/node
+      TERM: xterm-256color
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+      OPENCLAW_CONFIG_DIR: /home/node/.openclaw
+      OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      OLLAMA_API_KEY: ollama-local
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      TZ: ${OPENCLAW_TZ:-UTC}
+    volumes:
+      - "${OPENCLAW_CONFIG_DIR:-C:/AI/SALES/Outreach-main/docker/data/openclaw-config}:/home/node/.openclaw"
+      - "${OPENCLAW_WORKSPACE_DIR:-C:/AI/SALES/Outreach-main/docker/data/openclaw-workspace}:/home/node/.openclaw/workspace"
+      - "${OPENCLAW_AUTH_PROFILE_SECRET_DIR:-C:/AI/SALES/Outreach-main/docker/data/openclaw-auth-secrets}:/home/node/.config/openclaw"
+
+  # -------------------------------------------------------------
+  # Hermes (Nous Research)
+  # -------------------------------------------------------------
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes
+    profiles: ["ai"]
+    restart: unless-stopped
+    command: gateway run
+    shm_size: 1g
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      HERMES_DASHBOARD: ${HERMES_DASHBOARD:-1}
+      HERMES_DASHBOARD_HOST: ${HERMES_DASHBOARD_HOST:-0.0.0.0}
+      HERMES_DASHBOARD_PORT: ${HERMES_DASHBOARD_PORT:-9119}
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-hermes}
+      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:-}
+      HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${HERMES_DASHBOARD_BASIC_AUTH_SECRET:-}
+      API_SERVER_KEY: ${API_SERVER_KEY:-}
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    group_add:
+      - "${DOCKER_GID:-0}"
+    volumes:
+      - "${HERMES_HOME:-C:/AI/SALES/Outreach-main/docker/data/hermes}:/opt/data"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports:
+      - "8642:8642"
+      - "${HERMES_DASHBOARD_PORT:-9119}:9119"

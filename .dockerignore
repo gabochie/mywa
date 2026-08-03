@@ -1,0 +1,10 @@
+# Docker ignore — keep private data and build junk out of image layers.
+__pycache__/
+*.pyc
+contacts/
+real_out/
+.lookup_cache/
+.git/
+data/
+data.fresh-backup/
+state/

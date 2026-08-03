@@ -1,0 +1,45 @@
+# mywa - WhatsApp Contact Intelligence Toolkit
+# =============================================
+
+# --- Sensitive / runtime data (never commit) ---
+# Real contact data, extracted outputs and WhatsApp backups.
+contacts/
+real_out/
+out/
+gadata_out/
+state/
+data/
+data.fresh-backup/
+*.zip
+*.db
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+
+# --- Tooling ---
+.pytest_cache/
+.coverage
+htmlcov/
+.lookup_cache/
+
+# --- Local model files (large, downloaded at runtime) ---
+models/
+
+# --- Editor / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

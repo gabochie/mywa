@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mywa"
+version = "1.0.0"
+description = "WhatsApp Contact Intelligence Toolkit: extract, dedupe and segment every contact (including group members) from msgstore.db, wa.db, VCF, TSV or WhatsApp exports."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "mywa" }]
+keywords = ["whatsapp", "contacts", "segmentation", "outreach", "e164"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Communications :: Chat",
+    "Topic :: Office/Business",
+]
+dependencies = []
+
+[project.scripts]
+mywa = "mywa.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["mywa*"]
+
+[tool.setuptools.package-data]
+mywa = ["py.typed"]
