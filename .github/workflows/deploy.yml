@@ -16,8 +16,8 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          workingDirectory: cloud
-          command: deploy
+          wranglerVersion: '4.118.0'
+          command: deploy --config cloud/wrangler.jsonc
 
       - name: Verify deployment
         run: curl -fsS https://mywa.gabochie.com/api/health
