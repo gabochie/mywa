@@ -92,6 +92,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--lookup-delay", type=float, default=0.1,
         help="Seconds to pause between provider calls (rate control).",
     )
+    parser.add_argument(
+        "--analyze", action="store_true",
+        help="After processing, run the revenue agent on the output "
+             "(writes revenue_out/revenue.json + revenue_report.html).",
+    )
+    parser.add_argument(
+        "--revenue-dir", default="revenue_out",
+        help="Where the revenue agent writes its report (default: revenue_out).",
+    )
     return parser
 
 
@@ -162,6 +171,11 @@ def main(argv: list[str] | None = None) -> int:
         export_csv(os.path.join(args.out, "opportunities.csv"), opps_sorted)
         export_report(os.path.join(args.out, "report.html"), segmented, opps_sorted)
         print(f"wrote opportunities.csv ({len(opps_sorted)}) + report.html -> {args.out}")
+
+    if args.analyze:
+        from .revenue import analyze as analyze_revenue
+        analyze_revenue(args.out, args.revenue_dir)
+        print(f"revenue agent -> {args.revenue_dir}/revenue.json + revenue_report.html")
 
     if args.serve is not None:
         from .server import serve

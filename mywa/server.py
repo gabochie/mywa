@@ -12,6 +12,8 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
+from .revenue import RevenueAgent
+
 _STATE_DIR = os.environ.get(
     "MYWA_STATE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "state")
 )
@@ -193,6 +195,7 @@ tbody tr{transition:background .12s ease}
       <button class="navbtn" id="navGroups"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19c.6-3 2.7-5 5.5-5s4.9 2 5.5 5"></path><circle cx="17" cy="9" r="2.4"></circle><path d="M15 14.4c2.6.4 4.6 2.2 5.2 4.6"></path></svg>Groups</button>
       <button class="navbtn" id="navOpportunities"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M9 12l2.2 2.2L15.5 9.5"></path><path d="M12 3v3M12 18v3M3 12h3M18 12h3"></path></svg>Opportunities</button>
       <button class="navbtn" id="navSegments"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2.6"></circle><path d="M5.6 5.6c3.5-3.5 9.3-3.5 12.8 0"></path><path d="M3 12c0-4.4 2.6-7.6 5.5-9.3M21 12c0-4.4-2.6-7.6-5.5-9.3"></path></svg>Segments</button>
+      <button class="navbtn" id="navRevenue"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>Revenue</button>
       <button class="navbtn" id="navRoadmap"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"></circle><circle cx="6" cy="18" r="2.4"></circle><line x1="8.4" y1="6" x2="21" y2="6"></line><line x1="8.4" y1="18" x2="14" y2="18"></line><line x1="14" y1="18" x2="14" y2="10"></line><line x1="21" y1="6" x2="21" y2="12"></line></svg>Roadmap</button>
     </nav>
     <div class="side-foot">
@@ -231,6 +234,12 @@ tbody tr{transition:background .12s ease}
       <div class="bar"><div class="fill" id="rmFill" style="width:0%"></div></div>
       <div id="rmPhases"></div>
     </div>
+  </div>
+  <div id="viewRevenue" style="display:none">
+    <div class="cards" id="revCards"></div>
+    <div class="panel"><h3>Revenue channels</h3><div id="revChannels"></div></div>
+    <div class="panel"><h3>Vertical opportunity</h3><div id="revVerticals"></div></div>
+    <div class="panel"><h3>Priority playbook (top 20)</h3><div class="tablewrap" id="revPlaybook"></div></div>
   </div>
   </div>
   </main>
@@ -449,6 +458,7 @@ fetch('/api/data').then(function(r){return r.json();}).then(function(d){
 
 get('navInsights').addEventListener('click',function(){switchView('insights');});
 get('navRoadmap').addEventListener('click',function(){switchView('roadmap');buildRoadmap();});
+get('navRevenue').addEventListener('click',function(){switchView('revenue');});
 get('navGroups').addEventListener('click',function(){setNavActive('navGroups');switchView('insights');scrollToId('groups');});
 get('navOpportunities').addEventListener('click',function(){setNavActive('navOpportunities');switchView('insights');if(!get('btnOpp').classList.contains('active')){get('btnOpp').classList.add('active');get('btnOpp').textContent='Showing opportunities';}render();scrollToId('tblwrap');});
 get('navSegments').addEventListener('click',function(){setNavActive('navSegments');switchView('insights');get('fDiaspora').value='1';render();scrollToId('charts');});
@@ -460,11 +470,45 @@ function scrollToId(id){
   var el=get(id);if(el)el.scrollIntoView({behavior:'smooth',block:'start'});
 }
 function switchView(name){
-  var on=(name==='roadmap');
-  get('navInsights').classList.toggle('active',!on);
-  get('navRoadmap').classList.toggle('active',on);
-  get('viewInsights').style.display=on?'none':'';
-  get('viewRoadmap').style.display=on?'':'none';
+  ['navInsights','navRoadmap','navRevenue'].forEach(function(n){get(n).classList.toggle('active',n==='nav'+name.charAt(0).toUpperCase()+name.slice(1));});
+  get('viewInsights').style.display=(name==='insights')?'':'none';
+  get('viewRoadmap').style.display=(name==='roadmap')?'':'none';
+  get('viewRevenue').style.display=(name==='revenue')?'':'none';
+  if(name==='revenue')buildRevenue();
+}
+var REV;
+var fmtG=function(n){n=Number(n)||0;if(n>=1e6)return 'GHS '+(n/1e6).toFixed(1)+'M';if(n>=1e3)return 'GHS '+(n/1e3).toFixed(1)+'K';return 'GHS '+Math.round(n);};
+function buildRevenue(){
+  if(REV)return renderRevenue();
+  fetch('/api/revenue').then(function(r){return r.json();}).then(function(d){REV=d;renderRevenue();});
+}
+function renderRevenue(){
+  if(REV.error){get('revCards').innerHTML='<div class="card"><div class="n">!</div><div class="l">'+esc(REV.error)+'</div></div>';return;}
+  var s=REV.summary;
+  var cards=[['Total contacts',s.total_contacts.toLocaleString()],['Valid mobile',s.valid_contacts.toLocaleString()],
+    ['Businesses',s.businesses.toLocaleString()],['Hot + warm',s.hot+s.warm],['Diaspora',s.diaspora.toLocaleString()],
+    ['Projected revenue',fmtG(s.est_total_revenue)],['B2B clients',s.channels.b2b.clients],['With email',s.emails.toLocaleString()]];
+  get('revCards').innerHTML=cards.map(function(c){return '<div class="card"><div class="n">'+c[1]+'</div><div class="l">'+c[0]+'</div></div>';}).join('');
+  var ch=s.channels;
+  var rows='<table><tr><th>Channel</th><th>Reach</th><th>Revenue</th></tr>';
+  rows+='<tr><td>B2B contracts ('+ch.b2b.clients+' clients)</td><td>'+esc(ch.b2b.avg_contract)+' avg</td><td><b>'+fmtG(ch.b2b.revenue)+'</b></td></tr>';
+  rows+='<tr><td>B2C campaigns</td><td>'+ch.b2c_campaigns.reach+'</td><td>'+fmtG(ch.b2c_campaigns.revenue)+'</td></tr>';
+  rows+='<tr><td>Diaspora services</td><td>'+ch.diaspora.reach+'</td><td>'+fmtG(ch.diaspora.revenue)+'</td></tr>';
+  rows+='<tr><td>Product services</td><td>-</td><td>'+fmtG(ch.product_services.revenue)+'</td></tr>';
+  rows+='<tr><td><b>Total</b></td><td></td><td><b>'+fmtG(s.est_total_revenue)+'</b></td></tr></table>';
+  get('revChannels').innerHTML=rows;
+  var verts=Object.keys(REV.segments.by_vertical).sort(function(a,b){return REV.segments.by_vertical[b].count-REV.segments.by_vertical[a].count;}).slice(0,8);
+  var vrows='<table><tr><th>Vertical</th><th>Contacts</th><th>Pipeline</th><th>Sell</th></tr>';
+  verts.forEach(function(v){var x=REV.segments.by_vertical[v];
+    vrows+='<tr><td>'+esc(v.replace(/_/g,' '))+'</td><td>'+x.count+'</td><td>'+fmtG(x.pipeline)+'</td><td class="mut">'+esc(x.products.join(', '))+'</td></tr>';});
+  vrows+='</table>';
+  get('revVerticals').innerHTML=vrows;
+  var pb=REV.playbook.slice(0,20);
+  var prows='<table><tr><th>#</th><th>Name</th><th>Phone</th><th>Vertical</th><th>Score</th><th>Sell</th></tr>';
+  pb.forEach(function(p){
+    prows+='<tr><td>'+p.rank+'</td><td>'+esc(p.name)+'</td><td>'+esc(p.phone)+'</td><td>'+esc(p.vertical)+'</td><td>'+p.value_score.toFixed(2)+'</td><td class="mut">'+esc(p.sell.slice(0,2).join(', '))+'</td></tr>';});
+  prows+='</table>';
+  get('revPlaybook').innerHTML=prows;
 }
 var STATUSES=['planned','in_progress','done'];
 var NEXT_ST={'planned':'in_progress','in_progress':'done','done':'planned'};
@@ -531,6 +575,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send("text/csv; charset=utf-8",
                        ("\ufeff" + buf.getvalue()).encode("utf-8"),
                        {"Content-Disposition": 'attachment; filename="contacts.csv"'})
+        elif path == "/api/revenue":
+            try:
+                result = RevenueAgent(self.data).analyze()
+                self._send("application/json; charset=utf-8",
+                           json.dumps(result).encode("utf-8"))
+            except Exception as exc:  # pragma: no cover
+                self._send("application/json; charset=utf-8",
+                           json.dumps({"error": str(exc)}).encode("utf-8"))
         elif path == "/api/roadmap":
             self._send("application/json; charset=utf-8",
                        json.dumps(load_roadmap()).encode("utf-8"))
