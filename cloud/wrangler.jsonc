@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mywa",
+  "main": "src/api.js",
+  "compatibility_date": "2026-08-01",
+  "assets": { "directory": "public", "binding": "ASSETS" },
+  "d1_databases": [
+    {
+      "binding": "mywa_db",
+      "database_name": "mywa-db",
+      "database_id": "f7b128c7-11ba-490c-b0b6-dbf0bce9f10f"
+    }
+  ],
+  "routes": [
+    { "pattern": "mywa.gabochie.com", "zone_name": "gabochie.com", "custom_domain": true }
+  ],
+  "observability": { "enabled": true }
+}

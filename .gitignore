@@ -38,6 +38,11 @@ htmlcov/
 # --- Local model files (large, downloaded at runtime) ---
 models/
 
+# --- Cloud (Wrangler) local state ---
+cloud/.wrangler/
+cloud/node_modules/
+cloud/.dev.vars
+
 # --- Editor / OS ---
 .idea/
 .vscode/

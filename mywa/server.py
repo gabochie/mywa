@@ -18,6 +18,119 @@ _STATE_DIR = os.environ.get(
     "MYWA_STATE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "state")
 )
 ROADMAP_PATH = os.path.join(_STATE_DIR, "roadmap.json")
+LEADS_PATH = os.path.join(_STATE_DIR, "leads.json")
+LANDING_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "landing.html")
+
+
+def load_landing() -> str:
+    try:
+        with open(LANDING_PATH, "r", encoding="utf-8") as fh:
+            return fh.read()
+    except (OSError, UnicodeDecodeError):
+        return "<!DOCTYPE html><html><head><title>mywa</title></head><body><h1>mywa</h1><a href='/admin'>Admin</a></body></html>"
+
+
+def save_lead(payload: dict) -> dict:
+    """Record a public-signup lead (name, business, whatsapp). Keeps state/leads.json."""
+    name = str(payload.get("name") or "").strip()
+    business = str(payload.get("business") or "").strip()
+    phone = str(payload.get("phone") or "").strip()
+    offer = str(payload.get("offer") or "").strip()
+    if not name or not phone:
+        return {"ok": False, "error": "name and phone are required"}
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    if len(digits) < 9:
+        return {"ok": False, "error": "enter a valid WhatsApp number"}
+    leads = []
+    try:
+        with open(LEADS_PATH, "r", encoding="utf-8") as fh:
+            leads = json.load(fh)
+        if not isinstance(leads, list):
+            leads = []
+    except (OSError, json.JSONDecodeError):
+        leads = []
+    leads.append({
+        "name": name, "business": business, "phone": phone, "offer": offer,
+        "ts": __import__("time").time(),
+    })
+    try:
+        os.makedirs(_STATE_DIR, exist_ok=True)
+        with open(LEADS_PATH, "w", encoding="utf-8") as fh:
+            json.dump(leads, fh, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+    return {"ok": True, "count": len(leads)}
+
+
+def load_leads() -> list:
+    try:
+        with open(LEADS_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _load_dotenv(path: str) -> None:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                os.environ.setdefault(key.strip(), value.strip())
+    except OSError:
+        pass
+
+
+_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"))
+_CLOUD_URL = os.environ.get("MYWA_CLOUD_URL", "").rstrip("/")
+_ADMIN_TOKEN = os.environ.get("MYWA_ADMIN_TOKEN", "")
+_CLOUD_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+
+def _cloud_get(path: str) -> dict:
+    import urllib.error
+    import urllib.request
+
+    if not _CLOUD_URL or not _ADMIN_TOKEN:
+        return {"ok": False, "error": "not_configured"}
+    req = urllib.request.Request(
+        _CLOUD_URL + path,
+        headers={"x-admin-token": _ADMIN_TOKEN, "User-Agent": _CLOUD_UA},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _cloud_post(path: str, payload: dict) -> dict:
+    import urllib.error
+    import urllib.request
+
+    if not _CLOUD_URL or not _ADMIN_TOKEN:
+        return {"ok": False, "error": "not_configured"}
+    req = urllib.request.Request(
+        _CLOUD_URL + path,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "x-admin-token": _ADMIN_TOKEN,
+            "Content-Type": "application/json",
+            "User-Agent": _CLOUD_UA,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+        return {"ok": False, "error": str(exc)}
 
 _DEFAULT_ROADMAP = {
     "goal": "Become agentic: export -> analyze -> engage -> learn",
@@ -102,6 +215,16 @@ header::after{content:'';position:absolute;inset:0;background:radial-gradient(64
 .rm-item:last-child{border-bottom:none}
 .rm-item h4{margin:0;font-size:.9rem}
 .rm-item p{margin:.16rem 0 0;font-size:.78rem;color:var(--mut)}
+.rm-toggle{display:inline-block;margin-top:.5rem;background:#f1f5f9;border:1px solid var(--line);border-radius:8px;padding:.26rem .7rem;font-size:.72rem;font-weight:700;color:var(--green);cursor:pointer;transition:all .15s ease}
+.rm-toggle:hover{background:#e2e8f0}
+.wl-st{display:inline-block;border-radius:999px;padding:.24rem .68rem;font-size:.7rem;font-weight:700;cursor:pointer;border:none;color:#fff;min-width:84px;text-align:center;transition:transform .12s ease,filter .12s ease}
+.wl-st:hover{transform:translateY(-1px);filter:brightness(1.08)}
+.wl-st.waiting{background:#94a3b8}.wl-st.invited{background:#2563eb}.wl-st.onboarded{background:#d97706}.wl-st.paid{background:#059669}.wl-st.dismissed{background:#64748b}
+.wl-score{font-weight:800}
+.rm-steps{display:none;margin:.55rem 0 0;padding-left:1.25rem;font-size:.78rem;color:var(--mut)}
+.rm-steps.open{display:block}
+.rm-steps li{margin:.28rem 0}
+.rm-steps code{background:#eef2f6;border-radius:4px;padding:.05rem .32rem;font-size:.74rem;color:#0f766e;font-family:Consolas,Menlo,monospace}
 .st{display:inline-block;border-radius:999px;padding:.26rem .7rem;font-size:.72rem;font-weight:700;cursor:pointer;border:none;color:#fff;min-width:92px;text-align:center;transition:transform .12s ease,filter .12s ease}
 .st:hover{transform:translateY(-1px);filter:brightness(1.06)}
 .st.done{background:#059669}.st.in_progress{background:#d97706}.st.planned{background:#94a3b8}
@@ -196,11 +319,13 @@ tbody tr{transition:background .12s ease}
       <button class="navbtn" id="navOpportunities"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M9 12l2.2 2.2L15.5 9.5"></path><path d="M12 3v3M12 18v3M3 12h3M18 12h3"></path></svg>Opportunities</button>
       <button class="navbtn" id="navSegments"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2.6"></circle><path d="M5.6 5.6c3.5-3.5 9.3-3.5 12.8 0"></path><path d="M3 12c0-4.4 2.6-7.6 5.5-9.3M21 12c0-4.4-2.6-7.6-5.5-9.3"></path></svg>Segments</button>
       <button class="navbtn" id="navRevenue"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>Revenue</button>
+      <button class="navbtn" id="navWaitlist"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"></path><path d="M3 6h.01M3 12h.01M3 18h.01"></path></svg>Waitlist</button>
       <button class="navbtn" id="navRoadmap"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"></circle><circle cx="6" cy="18" r="2.4"></circle><line x1="8.4" y1="6" x2="21" y2="6"></line><line x1="8.4" y1="18" x2="14" y2="18"></line><line x1="14" y1="18" x2="14" y2="10"></line><line x1="21" y1="6" x2="21" y2="12"></line></svg>Roadmap</button>
     </nav>
     <div class="side-foot">
       <span class="live"><i></i> LIVE</span>
       <span class="pill">Agentic-ready</span>
+      <span class="pill" style="cursor:pointer" onclick="location.href='/'">↗ Public site</span>
     </div>
   </aside>
   <main class="main">
@@ -241,6 +366,20 @@ tbody tr{transition:background .12s ease}
     <div class="panel"><h3>Vertical opportunity</h3><div id="revVerticals"></div></div>
     <div class="panel"><h3>Priority playbook (top 20)</h3><div class="tablewrap" id="revPlaybook"></div></div>
   </div>
+  <div id="viewWaitlist" style="display:none">
+    <div class="cards" id="wlCards"></div>
+    <div class="chartgrid">
+      <div class="panel"><h3>Signups · last 14 days</h3><div id="wlChart"></div></div>
+      <div class="panel"><h3>Vertical mix</h3><div id="wlVerticals"></div></div>
+      <div class="panel"><h3>Source</h3><div id="wlSources"></div></div>
+      <div class="panel"><h3>Demand score</h3><div id="wlScores"></div></div>
+    </div>
+    <div class="controls">
+      <div class="search" style="max-width:none;flex:1"><input type="search" id="wlq" placeholder="Search waitlist (name, business, phone, offer)…" style="width:100%"></div>
+      <button class="btn" id="wlExport" style="background:var(--green);color:#fff;border:none;border-radius:10px;padding:.6rem 1.1rem;font-weight:700;cursor:pointer">Export CSV</button>
+    </div>
+    <div class="tablewrap" id="wlTable"></div>
+  </div>
   </div>
   </main>
 </div>
@@ -267,6 +406,8 @@ function buildCards(){
     ['Diaspora',DATA.filter(function(c){return c.diaspora;}).length],
     ['Tagged opportunities',Object.keys(tags).length],['Groups',Object.keys(groups).length]];
   get('cards').innerHTML=cards.map(function(item){return '<div class="card"><div class="n">'+item[1]+'</div><div class="l">'+item[0]+'</div></div>';}).join('');
+  fetch('/api/leads/count').then(function(r){return r.json();}).then(function(l){
+    get('cards').insertAdjacentHTML('beforeend','<div class="card"><div class="n">'+l.count+'</div><div class="l">New signups</div></div>');});
 }
 
 function buildTags(){
@@ -355,7 +496,6 @@ function render(){
   buildCharts();
 }
 
-var cells={};
 var PAL=['#075E54','#128C7E','#2bb673','#7c3aed','#2563eb','#f59e0b','#dc2626','#3b82f6','#14b8a6','#94a3b8'];
 
 function aggregate(list,key){
@@ -459,6 +599,7 @@ fetch('/api/data').then(function(r){return r.json();}).then(function(d){
 get('navInsights').addEventListener('click',function(){switchView('insights');});
 get('navRoadmap').addEventListener('click',function(){switchView('roadmap');buildRoadmap();});
 get('navRevenue').addEventListener('click',function(){switchView('revenue');});
+get('navWaitlist').addEventListener('click',function(){switchView('waitlist');});
 get('navGroups').addEventListener('click',function(){setNavActive('navGroups');switchView('insights');scrollToId('groups');});
 get('navOpportunities').addEventListener('click',function(){setNavActive('navOpportunities');switchView('insights');if(!get('btnOpp').classList.contains('active')){get('btnOpp').classList.add('active');get('btnOpp').textContent='Showing opportunities';}render();scrollToId('tblwrap');});
 get('navSegments').addEventListener('click',function(){setNavActive('navSegments');switchView('insights');get('fDiaspora').value='1';render();scrollToId('charts');});
@@ -470,11 +611,13 @@ function scrollToId(id){
   var el=get(id);if(el)el.scrollIntoView({behavior:'smooth',block:'start'});
 }
 function switchView(name){
-  ['navInsights','navRoadmap','navRevenue'].forEach(function(n){get(n).classList.toggle('active',n==='nav'+name.charAt(0).toUpperCase()+name.slice(1));});
+  ['navInsights','navRoadmap','navRevenue','navWaitlist'].forEach(function(n){get(n).classList.toggle('active',n==='nav'+name.charAt(0).toUpperCase()+name.slice(1));});
   get('viewInsights').style.display=(name==='insights')?'':'none';
   get('viewRoadmap').style.display=(name==='roadmap')?'':'none';
   get('viewRevenue').style.display=(name==='revenue')?'':'none';
+  get('viewWaitlist').style.display=(name==='waitlist')?'':'none';
   if(name==='revenue')buildRevenue();
+  if(name==='waitlist')buildWaitlist();
 }
 var REV;
 var fmtG=function(n){n=Number(n)||0;if(n>=1e6)return 'GHS '+(n/1e6).toFixed(1)+'M';if(n>=1e3)return 'GHS '+(n/1e3).toFixed(1)+'K';return 'GHS '+Math.round(n);};
@@ -510,6 +653,75 @@ function renderRevenue(){
   prows+='</table>';
   get('revPlaybook').innerHTML=prows;
 }
+var WL_STATUSES=['waiting','invited','onboarded','paid','dismissed'];
+var WL_NEXT={'waiting':'invited','invited':'onboarded','onboarded':'paid','paid':'waiting','dismissed':'waiting'};
+var WL_DATA=[];
+function wlChartSVG(daily){
+  if(!daily||!daily.length)return '<div class="mut">No signups yet</div>';
+  var maxv=Math.max.apply(null,daily.map(function(d){return d.n;}))||1;
+  var w=560,gap=6,cols=daily.length,bw=(w-gap*(cols+1))/cols,sg='<svg viewBox="0 0 '+w+' 120" width="100%" height="auto">';
+  daily.forEach(function(d,i){
+    var h=Math.max(3,(d.n/maxv)*80),x=gap+i*(bw+gap),y=110-h;
+    sg+='<rect x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h.toFixed(1)+'" rx="3" fill="#128C7E" opacity="0.85"><title>'+esc(d.day)+': '+d.n+'</title></rect>';
+    if(i%Math.ceil(cols/6)===0)sg+='<text x="'+x.toFixed(1)+'" y="118" font-size="9" fill="var(--mut)">'+esc(d.day.slice(5))+'</text>';
+  });
+  return sg+'</svg>';
+}
+function wlHBar(items){
+  if(!items||!items.length)return '<div class="mut">No data</div>';
+  var maxv=items[0].n,sg='<svg viewBox="0 0 280 '+((Math.min(items.length,6))*24+6)+'" width="100%" height="auto">';
+  items.slice(0,6).forEach(function(it,i){
+    var bw=Math.max(2,(it.n/maxv)*240),y=i*24+2;
+    sg+='<rect x="0" y="'+y+'" width="'+bw+'" height="16" rx="3" fill="'+PAL[i%PAL.length]+'"/>';
+    sg+='<text x="'+(bw+6)+'" y="'+(y+13)+'" font-size="10" fill="var(--mut)">'+esc(it.v!=null?it.v:it.status)+'</text>';
+    sg+='<text x="274" y="'+(y+13)+'" font-size="10" text-anchor="end" fill="var(--green)" font-weight="700">'+it.n+'</text>';
+  });
+  return sg+'</svg>';
+}
+function wlStatusPill(s,id){return '<button class="wl-st '+s+'" data-id="'+esc(id)+'">'+esc(s)+'</button>';}
+function buildWaitlist(){
+  fetch('/api/waitlist/stats').then(function(r){return r.json();}).then(function(st){
+    if(st.error&&st.error==='not_configured'){get('wlCards').innerHTML='<div class="card"><div class="n">—</div><div class="l">Cloud not configured (MYWA_CLOUD_URL)</div></div>';return;}
+    var total=st.total||0,high=0;
+    (st.by_score||[]).forEach(function(x){if(x.score>=4)high+=x.n;});
+    var avg=total&&(st.by_score||[]).length?(st.by_score.reduce(function(s,x){return s+x.score*x.n;},0)/total).toFixed(1):'—';
+    var cards=[['Total waitlist',total],['Today',st.today],['Invited',st.invited],['Converted',st.converted],['Avg demand score',avg],['High-value (4-5)',high]];
+    get('wlCards').innerHTML=cards.map(function(c){return '<div class="card"><div class="n">'+c[1]+'</div><div class="l">'+c[0]+'</div></div>';}).join('');
+    get('wlChart').innerHTML=wlChartSVG(st.daily);
+    get('wlVerticals').innerHTML=wlHBar(st.by_vertical);
+    get('wlSources').innerHTML=wlHBar(st.by_source);
+    get('wlScores').innerHTML=wlHBar(st.by_score);
+  });
+  fetch('/api/waitlist').then(function(r){return r.json();}).then(function(d){
+    if(d.error){get('wlTable').innerHTML='<div class="mut">'+esc(d.error)+'</div>';return;}
+    WL_DATA=d.leads||[];renderWaitlist();
+  });
+}
+function renderWaitlist(){
+  var q=(get('wlq').value||'').toLowerCase().trim();
+  var rows=WL_DATA.filter(function(l){return !q||(String(l.name+' '+l.business+' '+l.phone+' '+l.offer).toLowerCase().indexOf(q)>=0);});
+  var html='<table><tr><th>#</th><th>Name</th><th>Business</th><th>Phone</th><th>Offer</th><th>Source</th><th>Score</th><th>Status</th><th>Date</th></tr>';
+  rows.forEach(function(l){
+    html+='<tr><td>'+l.position+'</td><td>'+esc(l.name)+'</td><td>'+esc(l.business||'—')+'</td><td>'+esc(l.phone)+'</td><td class="mut">'+esc(l.offer||'—')+'</td><td>'+esc(l.source||'direct')+'</td>'+
+      '<td><span class="wl-score" style="color:'+(l.score>=4?'#059669':(l.score>=2?'#d97706':'#94a3b8'))+'">'+l.score+'/5</span></td>'+
+      '<td>'+wlStatusPill(l.status,l.id)+'</td><td class="mut">'+new Date(l.ts).toLocaleDateString()+'</td></tr>';
+  });
+  get('wlTable').innerHTML=html||'<div class="mut">No matches</div>';
+  Array.prototype.forEach.call(document.querySelectorAll('#wlTable .wl-st'),function(btn){
+    btn.addEventListener('click',function(){
+      var id=btn.getAttribute('data-id'),ns=WL_NEXT[btn.className.split(' ')[1]]||'waiting';
+      fetch('/api/waitlist/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,status:ns})})
+        .then(function(r){return r.json();}).then(function(res){if(res.ok){renderWaitlist();buildWaitlist();}});
+    });
+  });
+}
+get('wlq').addEventListener('input',renderWaitlist);
+get('wlExport').addEventListener('click',function(){
+  var rows=[['position','name','business','phone','offer','source','score','status','date']];
+  WL_DATA.forEach(function(l){rows.push([l.position,l.name,l.business,l.phone,l.offer,l.source,l.score,l.status,new Date(l.ts).toISOString().slice(0,10)]);});
+  var csv=rows.map(function(r){return r.map(function(v){return '"'+String(v==null?'':v).replace(/"/g,'""')+'"';}).join(',');}).join('\n');
+  var a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent('\ufeff'+csv);a.download='waitlist.csv';a.click();
+});
 var STATUSES=['planned','in_progress','done'];
 var NEXT_ST={'planned':'in_progress','in_progress':'done','done':'planned'};
 function buildRoadmap(){
@@ -522,7 +734,10 @@ function buildRoadmap(){
       (ph.items||[]).forEach(function(it){
         total++; if(it.status==='done'){done++;phDone++;}
         html+='<div class="rm-item"><button class="st '+it.status+'" data-id="'+esc(it.id)+'">'+it.status.replace('_',' ')+'</button>'+
-          '<div><h4>'+esc(it.title)+'</h4><p>'+esc(it.detail)+'</p></div></div>';
+          '<div class="rm-body"><h4>'+esc(it.title)+'</h4><p>'+esc(it.detail)+'</p>'+
+          (it.steps&&it.steps.length?('<button class="rm-toggle">Steps ('+it.steps.length+')</button>'+
+            '<ol class="rm-steps">'+it.steps.map(function(s){return '<li>'+esc(s)+'</li>';}).join('')+'</ol>'):'')+
+          '</div></div>';
       });
       html+='</div>';
     });
@@ -533,6 +748,12 @@ function buildRoadmap(){
         var id=btn.getAttribute('data-id'),ns=NEXT_ST[btn.className.split(' ')[1]]||'planned';
         fetch('/api/roadmap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,status:ns})})
           .then(function(r){return r.json();}).then(function(){buildRoadmap();});
+      });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#rmPhases .rm-toggle'),function(btn){
+      btn.addEventListener('click',function(){
+        var list=btn.nextElementSibling;list.classList.toggle('open');
+        btn.textContent=list.classList.contains('open')?'Hide steps':'Steps ('+(list.children.length)+')';
       });
     });
   });
@@ -562,6 +783,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
         if path == "/":
+            self._send("text/html; charset=utf-8", load_landing().encode("utf-8"))
+        elif path == "/admin":
             self._send("text/html; charset=utf-8", _INDEX_HTML.encode("utf-8"))
         elif path == "/api/data":
             self._send("application/json; charset=utf-8",
@@ -586,6 +809,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/roadmap":
             self._send("application/json; charset=utf-8",
                        json.dumps(load_roadmap()).encode("utf-8"))
+        elif path == "/api/leads/count":
+            self._send("application/json; charset=utf-8",
+                       json.dumps({"count": len(load_leads())}).encode("utf-8"))
+        elif path == "/api/waitlist":
+            self._send("application/json; charset=utf-8",
+                       json.dumps(_cloud_get("/api/waitlist")).encode("utf-8"))
+        elif path == "/api/waitlist/stats":
+            self._send("application/json; charset=utf-8",
+                       json.dumps(_cloud_get("/api/waitlist/stats")).encode("utf-8"))
         elif path == "/api/health":
             self._send("application/json", b'{"ok":true}')
         else:
@@ -603,6 +835,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self._send("application/json; charset=utf-8",
                        json.dumps(update_roadmap(payload)).encode("utf-8"))
+        elif path == "/api/lead":
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length).decode("utf-8")
+            try:
+                payload = json.loads(raw)
+            except (ValueError, TypeError):
+                self.send_error(400)
+                return
+            self._send("application/json; charset=utf-8",
+                       json.dumps(save_lead(payload)).encode("utf-8"))
+        elif path == "/api/waitlist/status":
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length).decode("utf-8")
+            try:
+                payload = json.loads(raw)
+            except (ValueError, TypeError):
+                self.send_error(400)
+                return
+            self._send("application/json; charset=utf-8",
+                       json.dumps(_cloud_post("/api/waitlist/status", payload)).encode("utf-8"))
         else:
             self.send_error(404)
 
