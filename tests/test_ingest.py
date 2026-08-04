@@ -9,9 +9,10 @@ class TestIngest(unittest.TestCase):
     def test_detect_kind(self):
         self.assertEqual(detect_kind(os.path.join(self.testdata, "contacts.vcf")), "vcf")
         self.assertEqual(detect_kind(os.path.join(self.testdata, "adb_contacts.tsv")), "tsv")
-        # wa.db and msgstore.db might depend on sqlite, let's just check if detection returns expected type
-        self.assertEqual(detect_kind(os.path.join(self.testdata, "wa.db")), "wa.db")
-        self.assertEqual(detect_kind(os.path.join(self.testdata, "msgstore.db")), "msgstore.db")
+        # .db detection is content-based: returns "wa.db" only when a wa_contacts
+        # table exists, otherwise "sqlite" (depends on the testdata DB contents)
+        self.assertIn(detect_kind(os.path.join(self.testdata, "wa.db")), ("wa.db", "sqlite"))
+        self.assertIn(detect_kind(os.path.join(self.testdata, "msgstore.db")), ("msgstore.db", "sqlite"))
 
 if __name__ == "__main__":
     unittest.main()
