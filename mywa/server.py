@@ -268,6 +268,107 @@ def rescore_lead(payload: dict) -> dict:
         return {"ok": False, "error": update.get("error", "update failed")}
     return {"ok": True, "id": lead_id, "score": score, "vertical": vertical, "engine": engine}
 
+
+_ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+
+
+def _mask_key(key: str) -> str:
+    if not key:
+        return ""
+    if len(key) <= 8:
+        return "*" * len(key)
+    return key[:4] + "..." + key[-4:]
+
+
+def settings_status() -> dict:
+    return {
+        "ok": True,
+        "freellmapi_url": _FREELLMAPI_URL,
+        "freellmapi_key": _mask_key(_FREELLMAPI_KEY),
+        "freellmapi_configured": bool(_FREELLMAPI_URL and _FREELLMAPI_KEY),
+        "cloud_configured": bool(_CLOUD_URL and _ADMIN_TOKEN),
+    }
+
+
+def _write_env(updates: dict) -> dict:
+    try:
+        with open(_ENV_PATH, "r", encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        lines = []
+    for key, value in updates.items():
+        marker = key + "="
+        hit = False
+        for i, line in enumerate(lines):
+            if line.strip().startswith(marker):
+                lines[i] = marker + value
+                hit = True
+                break
+        if not hit:
+            lines.append(marker + value)
+    try:
+        with open(_ENV_PATH, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+        return {"ok": True}
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def save_settings(payload: dict) -> dict:
+    global _FREELLMAPI_URL, _FREELLMAPI_KEY
+    url = str(payload.get("freellmapi_url") or "").strip().rstrip("/")
+    key = str(payload.get("freellmapi_key") or "").strip()
+    if key and set(key) == {"*"}:  # masked placeholder -> keep existing
+        key = ""
+    updates = {}
+    if url:
+        _FREELLMAPI_URL = url
+        os.environ["MYWA_FREELLMAPI_URL"] = url
+        updates["MYWA_FREELLMAPI_URL"] = url
+    if key:
+        _FREELLMAPI_KEY = key
+        os.environ["MYWA_FREELLMAPI_KEY"] = key
+        updates["MYWA_FREELLMAPI_KEY"] = key
+    if updates:
+        result = _write_env(updates)
+        if not result.get("ok"):
+            return result
+    return settings_status()
+
+
+def test_freellmapi() -> dict:
+    if not _FREELLMAPI_URL or not _FREELLMAPI_KEY:
+        return {"ok": False, "error": "not_configured",
+                "detail": "Add your FreeLLMAPI URL and API key first"}
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(
+        _FREELLMAPI_URL + "/v1/chat/completions",
+        data=json.dumps({
+            "model": "auto",
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+            "temperature": 0,
+        }).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer " + _FREELLMAPI_KEY,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            json.loads(resp.read().decode("utf-8"))
+        return {"ok": True, "engine": "ai"}
+    except urllib.error.HTTPError as exc:
+        if exc.code == 503:
+            return {"ok": False, "error": "provider_not_configured",
+                    "detail": "FreeLLMAPI returned 503: no healthy provider key. Open your FreeLLMAPI dashboard -> Keys page -> Add key."}
+        return {"ok": False, "error": "http_" + str(exc.code), "detail": str(exc)}
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+        return {"ok": False, "error": "unreachable", "detail": str(exc)}
+
+
 _DEFAULT_ROADMAP = {
     "goal": "Become agentic: export -> analyze -> engage -> learn",
     "phases": [
@@ -394,6 +495,10 @@ header::after{content:'';position:absolute;inset:0;background:radial-gradient(64
 .control select{padding:.5rem .6rem;border:1px solid var(--line);border-radius:10px;font-size:.85rem;background:#fafbfc;color:var(--ink);outline:none;cursor:pointer;transition:border-color .15s ease}
 .control select:focus{border-color:var(--teal);box-shadow:0 0 0 3px rgba(18,140,126,.12)}
 .controls .spacer{flex:1}
+.settings-form{display:flex;flex-direction:column;gap:.55rem;max-width:560px}
+.settings-form label{font-size:.72rem;color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.settings-form input{padding:.6rem .8rem;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.05);color:inherit;font-size:.9rem}
+.settings-form input:focus{border-color:var(--teal);outline:none;box-shadow:0 0 0 3px rgba(18,140,126,.14)}
 .btn{border:none;border-radius:10px;padding:.55rem .95rem;cursor:pointer;font-size:.84rem;font-weight:700;background:linear-gradient(120deg,var(--green),var(--teal));color:#fff;box-shadow:var(--sh-sm);transition:transform .12s ease,box-shadow .12s ease}
 .btn:hover{transform:translateY(-1px);box-shadow:var(--sh-md)}
 .btn.ghost{background:#fff;color:var(--teal);border:1px solid var(--teal);box-shadow:none}
@@ -460,6 +565,7 @@ tbody tr{transition:background .12s ease}
       <button class="navbtn" id="navRevenue"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>Revenue</button>
       <button class="navbtn" id="navWaitlist"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"></path><path d="M3 6h.01M3 12h.01M3 18h.01"></path></svg>Waitlist</button>
       <button class="navbtn" id="navRoadmap"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"></circle><circle cx="6" cy="18" r="2.4"></circle><line x1="8.4" y1="6" x2="21" y2="6"></line><line x1="8.4" y1="18" x2="14" y2="18"></line><line x1="14" y1="18" x2="14" y2="10"></line><line x1="21" y1="6" x2="21" y2="12"></line></svg>Roadmap</button>
+      <button class="navbtn" id="navSettings"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>Settings</button>
     </nav>
     <div class="side-foot">
       <span class="live"><i></i> LIVE</span>
@@ -519,6 +625,26 @@ tbody tr{transition:background .12s ease}
       <button class="btn" id="wlRescoreAll" style="background:#2563eb;color:#fff;border:none;border-radius:10px;padding:.6rem 1.1rem;font-weight:700;cursor:pointer">AI re-score all waiting</button>
     </div>
     <div class="tablewrap" id="wlTable"></div>
+  </div>
+  <div id="viewSettings" style="display:none">
+    <div class="panel">
+      <h3>FreeLLMAPI — AI re-scoring</h3>
+      <div class="settings-form">
+        <label>API URL</label>
+        <input type="text" id="setUrl" placeholder="https://api.freellmapi.com" autocomplete="off" spellcheck="false">
+        <label>API key (freellmapi-… unified key)</label>
+        <input type="password" id="setKey" placeholder="not configured" autocomplete="off">
+        <div class="controls" style="margin-top:.4rem">
+          <button class="btn" id="setSave" style="background:var(--green);color:#fff;border:none;border-radius:10px;padding:.6rem 1.1rem;font-weight:700;cursor:pointer">Save keys</button>
+          <button class="btn" id="setTest" style="background:#7c3aed;color:#fff;border:none;border-radius:10px;padding:.6rem 1.1rem;font-weight:700;cursor:pointer">Test AI connection</button>
+        </div>
+        <div id="setStatus" class="mut" style="margin-top:.5rem;line-height:1.5"></div>
+      </div>
+    </div>
+    <div class="panel"><h3>Cloud sync</h3><div id="setCloud" class="mut" style="line-height:1.6"></div></div>
+    <div class="panel"><h3>Where to get your provider keys</h3>
+      <div class="mut" id="setHelp" style="line-height:1.7"></div>
+    </div>
   </div>
   </div>
   </main>
@@ -740,6 +866,7 @@ get('navInsights').addEventListener('click',function(){switchView('insights');})
 get('navRoadmap').addEventListener('click',function(){switchView('roadmap');buildRoadmap();});
 get('navRevenue').addEventListener('click',function(){switchView('revenue');});
 get('navWaitlist').addEventListener('click',function(){switchView('waitlist');});
+get('navSettings').addEventListener('click',function(){switchView('settings');});
 get('navGroups').addEventListener('click',function(){setNavActive('navGroups');switchView('insights');scrollToId('groups');});
 get('navOpportunities').addEventListener('click',function(){setNavActive('navOpportunities');switchView('insights');if(!get('btnOpp').classList.contains('active')){get('btnOpp').classList.add('active');get('btnOpp').textContent='Showing opportunities';}render();scrollToId('tblwrap');});
 get('navSegments').addEventListener('click',function(){setNavActive('navSegments');switchView('insights');get('fDiaspora').value='1';render();scrollToId('charts');});
@@ -751,13 +878,15 @@ function scrollToId(id){
   var el=get(id);if(el)el.scrollIntoView({behavior:'smooth',block:'start'});
 }
 function switchView(name){
-  ['navInsights','navRoadmap','navRevenue','navWaitlist'].forEach(function(n){get(n).classList.toggle('active',n==='nav'+name.charAt(0).toUpperCase()+name.slice(1));});
+  ['navInsights','navRoadmap','navRevenue','navWaitlist','navSettings'].forEach(function(n){get(n).classList.toggle('active',n==='nav'+name.charAt(0).toUpperCase()+name.slice(1));});
   get('viewInsights').style.display=(name==='insights')?'':'none';
   get('viewRoadmap').style.display=(name==='roadmap')?'':'none';
   get('viewRevenue').style.display=(name==='revenue')?'':'none';
   get('viewWaitlist').style.display=(name==='waitlist')?'':'none';
+  get('viewSettings').style.display=(name==='settings')?'':'none';
   if(name==='revenue')buildRevenue();
   if(name==='waitlist')buildWaitlist();
+  if(name==='settings')buildSettings();
 }
 var REV;
 var fmtG=function(n){n=Number(n)||0;if(n>=1e6)return 'GHS '+(n/1e6).toFixed(1)+'M';if(n>=1e3)return 'GHS '+(n/1e3).toFixed(1)+'K';return 'GHS '+Math.round(n);};
@@ -925,6 +1054,41 @@ function buildRoadmap(){
     });
   });
 }
+function buildSettings(){
+  fetch('/api/settings').then(function(r){return r.json();}).then(function(s){
+    get('setUrl').value=s.freellmapi_url||'';
+    get('setKey').value='';
+    get('setKey').placeholder=s.freellmapi_key||'not configured';
+    var ai=s.freellmapi_configured?'<span style="color:var(--green)">configured — ready</span>':'<span style="color:#f59e0b">fallback only — add your FreeLLMAPI key</span>';
+    var cloud=s.cloud_configured?'<span style="color:var(--green)">connected</span>':'not configured';
+    get('setStatus').innerHTML='<b>AI engine:</b> '+ai+' · <b>Cloud:</b> '+cloud+(s.freellmapi_key?' · key: <code>'+esc(s.freellmapi_key)+'</code>':'');
+    get('setCloud').innerHTML='Waitlist data flows through the local server to mywa.gabochie.com. '+(s.cloud_configured?'Cloud URL and admin token are set.':'Cloud URL/admin token missing — waitlist sync disabled.');
+    get('setHelp').innerHTML='FreeLLMAPI is a self-hosted proxy that bundles free AI provider keys (Google Gemini, Groq, Cerebras, OpenRouter, GitHub Models…) behind one unified key.<br>'+
+      '1. Open your FreeLLMAPI dashboard (the server hosting api.freellmapi.com).<br>'+
+      '2. Go to the <b>Keys</b> page → <b>Add key</b> → pick a provider (e.g. Google Gemini → <a href="https://ai.google.dev" target="_blank" rel="noopener">ai.google.dev</a>, Groq → <a href="https://groq.com" target="_blank" rel="noopener">groq.com</a>).<br>'+
+      '3. Paste the provider API key and save. Repeat for more providers; reorder the <b>Fallback Chain</b>.<br>'+
+      '4. Copy the <b>freellmapi-…</b> unified key from the Keys page header and paste it above.<br>'+
+      '5. Click <b>Test AI connection</b> — green means re-scoring now uses AI.';
+  });
+}
+get('setSave').addEventListener('click',function(){
+  var body={freellmapi_url:get('setUrl').value.trim(),freellmapi_key:get('setKey').value.trim()};
+  fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}).then(function(s){
+      if(s.ok)get('setStatus').innerHTML='<span style="color:var(--green)">Saved.</span> '+(s.freellmapi_key?'key: <code>'+esc(s.freellmapi_key)+'</code>':'');
+      else get('setStatus').innerHTML='<span style="color:#ef4444">Save failed: '+esc(s.error)+'</span>';
+      buildSettings();
+    });
+});
+get('setTest').addEventListener('click',function(){
+  get('setTest').disabled=true;get('setTest').textContent='Testing…';
+  fetch('/api/settings/test',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+    .then(function(r){return r.json();}).then(function(res){
+      get('setTest').disabled=false;get('setTest').textContent='Test AI connection';
+      if(res.ok)get('setStatus').innerHTML='<span style="color:var(--green)">✓ AI connection OK — re-scoring will use the AI engine.</span>';
+      else get('setStatus').innerHTML='<span style="color:#ef4444">✗ '+esc(res.detail||res.error)+'</span>';
+    }).catch(function(){get('setTest').disabled=false;get('setTest').textContent='Test AI connection';get('setStatus').innerHTML='<span style="color:#ef4444">✗ request failed</span>';});
+});
 </script></body></html>
 """
 
@@ -987,6 +1151,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                        json.dumps(_cloud_get("/api/waitlist/stats")).encode("utf-8"))
         elif path == "/api/health":
             self._send("application/json", b'{"ok":true}')
+        elif path == "/api/settings":
+            self._send("application/json; charset=utf-8",
+                       json.dumps(settings_status()).encode("utf-8"))
         else:
             self.send_error(404)
 
@@ -1032,6 +1199,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self._send("application/json; charset=utf-8",
                        json.dumps(rescore_lead(payload)).encode("utf-8"))
+        elif path == "/api/settings":
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length).decode("utf-8")
+            try:
+                payload = json.loads(raw)
+            except (ValueError, TypeError):
+                self.send_error(400)
+                return
+            self._send("application/json; charset=utf-8",
+                       json.dumps(save_settings(payload)).encode("utf-8"))
+        elif path == "/api/settings/test":
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            self._send("application/json; charset=utf-8",
+                       json.dumps(test_freellmapi()).encode("utf-8"))
         else:
             self.send_error(404)
 
