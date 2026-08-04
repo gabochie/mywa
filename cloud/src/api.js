@@ -7,6 +7,7 @@
 //   GET  /api/waitlist         - full list with position + score
 //   GET  /api/waitlist/stats   - cards, daily series, vertical/source mix
 //   POST /api/waitlist/status  - update {id, status}
+//   PATCH /api/waitlist/lead   - update {id, score?, vertical?}
 //   GET  /api/leads/count      - quick counter (legacy)
 
 const RATE_LIMIT_PER_IP = 5;
@@ -115,11 +116,11 @@ async function handleLead(request, env) {
   const id = crypto.randomUUID();
   await env.mywa_db
     .prepare(
-      `INSERT INTO leads (id, name, business, phone, offer, source, status, score, ip, ua, visitor_id, ts, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO leads (id, name, business, phone, offer, source, status, score, vertical, ip, ua, visitor_id, ts, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
-      id, name, business, phone, offer, source, score,
+      id, name, business, phone, offer, source, score, vertical,
       request.headers.get("cf-connecting-ip") || "",
       (request.headers.get("user-agent") || "").slice(0, 200),
       visitorId, ts, ts,
@@ -166,7 +167,7 @@ async function handleStats(env) {
   const byStatus = (await env.mywa_db
     .prepare("SELECT status, COUNT(*) AS n FROM leads GROUP BY status").all()).results;
   const byVertical = (await env.mywa_db
-    .prepare("SELECT vertical_class AS v, COUNT(*) AS n FROM (SELECT CASE WHEN offer LIKE '%estate%' OR offer LIKE '%property%' OR offer LIKE '%land%' THEN 'real_estate' WHEN offer LIKE '%agency%' OR offer LIKE '%market%' THEN 'agency' ELSE 'other' END AS vertical_class FROM leads) GROUP BY vertical_class").all()).results;
+    .prepare("SELECT COALESCE(NULLIF(vertical, ''), 'other') AS v, COUNT(*) AS n FROM leads GROUP BY v ORDER BY n DESC").all()).results;
   const daily = (await env.mywa_db
     .prepare(
       `SELECT strftime('%Y-%m-%d', ts/1000, 'unixepoch') AS day, COUNT(*) AS n
@@ -215,6 +216,43 @@ async function handleStatus(request, env) {
   return json({ ok: true });
 }
 
+async function handleLeadUpdate(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "invalid request" }, 400);
+  }
+  const id = String(body.id || "");
+  if (!id) return json({ ok: false, error: "id required" }, 400);
+
+  const fields = [];
+  const values = [];
+  if (body.score !== undefined && body.score !== null) {
+    const score = Number(body.score);
+    if (!Number.isInteger(score) || score < 0 || score > 5) {
+      return json({ ok: false, error: "score must be an integer 0-5" }, 400);
+    }
+    fields.push("score = ?");
+    values.push(score);
+  }
+  if (body.vertical !== undefined && body.vertical !== null) {
+    const vertical = String(body.vertical).trim().slice(0, 40);
+    if (!vertical) return json({ ok: false, error: "invalid vertical" }, 400);
+    fields.push("vertical = ?");
+    values.push(vertical);
+  }
+  if (fields.length === 0) return json({ ok: false, error: "nothing to update" }, 400);
+
+  fields.push("updated_at = ?");
+  values.push(Date.now(), id);
+  await env.mywa_db
+    .prepare(`UPDATE leads SET ${fields.join(", ")} WHERE id = ?`)
+    .bind(...values)
+    .run();
+  return json({ ok: true });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -232,6 +270,7 @@ export default {
       if (request.method === "GET" && path === "/api/waitlist/stats") return handleStats(env);
       if (request.method === "GET" && path === "/api/waitlist") return handleWaitlist(env);
       if (request.method === "POST" && path === "/api/waitlist/status") return handleStatus(request, env);
+      if (request.method === "PATCH" && path === "/api/waitlist/lead") return handleLeadUpdate(request, env);
       return json({ error: "not found" }, 404);
     }
     if (request.method === "GET" && path === "/api/leads/count") {

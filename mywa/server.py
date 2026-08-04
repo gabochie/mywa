@@ -87,10 +87,63 @@ def _load_dotenv(path: str) -> None:
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"))
 _CLOUD_URL = os.environ.get("MYWA_CLOUD_URL", "").rstrip("/")
 _ADMIN_TOKEN = os.environ.get("MYWA_ADMIN_TOKEN", "")
+_FREELLMAPI_URL = os.environ.get("MYWA_FREELLMAPI_URL", "").rstrip("/")
+_FREELLMAPI_KEY = os.environ.get("MYWA_FREELLMAPI_KEY", "")
 _CLOUD_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+
+_HIGH_VALUE_VERTICALS = {"real_estate", "agency", "construction", "hospitality", "finance"}
+_VERTICAL_KEYWORDS = (
+    ("real_estate", ("real estate", "property", "estate", "land", "housing", "agent")),
+    ("agency", ("agency", "marketing", "advert", "digital", "media", "brand")),
+    ("construction", ("construction", "contractor", "building", "civil", "engineer")),
+    ("hospitality", ("hotel", "restaurant", "food", "lodge", "cater", "bar")),
+    ("retail", ("shop", "store", "clothing", "cosmetics", "beauty", "retail", "salon", "fashion")),
+    ("healthcare", ("health", "pharma", "hospital", "clinic", "medical", "doctor", "dentist")),
+    ("finance", ("finance", "insurance", "loan", "bank", "fintech", "investment")),
+)
+
+
+def classify_vertical(offer: str, business: str) -> str:
+    hay = f"{offer or ''} {business or ''}".lower()
+    for key, kws in _VERTICAL_KEYWORDS:
+        if any(k in hay for k in kws):
+            return key
+    return "other"
+
+
+def is_ghana_mobile(phone: str) -> bool:
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    if len(digits) == 12 and digits.startswith("233"):
+        return digits[3] in "5217"
+    if len(digits) == 10 and digits.startswith("0"):
+        return digits[1] in "5217"
+    return False
+
+
+def _cloud_patch(path: str, payload: dict) -> dict:
+    import urllib.error
+    import urllib.request
+
+    if not _CLOUD_URL or not _ADMIN_TOKEN:
+        return {"ok": False, "error": "not_configured"}
+    req = urllib.request.Request(
+        _CLOUD_URL + path,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "x-admin-token": _ADMIN_TOKEN,
+            "Content-Type": "application/json",
+            "User-Agent": _CLOUD_UA,
+        },
+        method="PATCH",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def _cloud_get(path: str) -> dict:
@@ -131,6 +184,89 @@ def _cloud_post(path: str, payload: dict) -> dict:
             return json.loads(resp.read().decode("utf-8"))
     except (urllib.error.HTTPError, urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def _ai_vertical(offer: str, business: str) -> str | None:
+    if not _FREELLMAPI_URL or not _FREELLMAPI_KEY:
+        return None
+    import urllib.error
+    import urllib.request
+
+    allowed = "real_estate, agency, construction, hospitality, retail, healthcare, finance, other"
+    prompt = (
+        "Classify this Ghanaian SME into exactly one vertical from this list: "
+        f"{allowed}. Reply with JSON only, e.g. "
+        '{"vertical": "retail"}.\n'
+        f'Business: "{business or "-"}". Offer/description: "{offer or "-"}".'
+    )
+    req = urllib.request.Request(
+        _FREELLMAPI_URL + "/v1/chat/completions",
+        data=json.dumps({
+            "model": "auto",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 60,
+            "temperature": 0,
+        }).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer " + _FREELLMAPI_KEY,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        content = data["choices"][0]["message"]["content"]
+        start = content.find("{")
+        end = content.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        parsed = json.loads(content[start:end + 1])
+        vertical = str(parsed.get("vertical") or "").strip().lower()
+        if vertical in _HIGH_VALUE_VERTICALS or vertical in {
+            "retail", "healthcare", "other",
+        }:
+            return vertical
+        for key, _kws in _VERTICAL_KEYWORDS:
+            if vertical == key:
+                return key
+        return None
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError,
+            KeyError, IndexError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def rescore_lead(payload: dict) -> dict:
+    lead_id = str(payload.get("id") or "").strip()
+    if not lead_id:
+        return {"ok": False, "error": "id required"}
+    listing = _cloud_get("/api/waitlist")
+    if not listing.get("ok"):
+        return {"ok": False, "error": listing.get("error", "cloud unreachable")}
+    lead = next((l for l in listing.get("leads", []) if l.get("id") == lead_id), None)
+    if not lead:
+        return {"ok": False, "error": "lead not found"}
+
+    vertical = _ai_vertical(str(lead.get("offer") or ""), str(lead.get("business") or ""))
+    engine = "ai" if vertical else "fallback"
+    if not vertical:
+        vertical = classify_vertical(str(lead.get("offer") or ""), str(lead.get("business") or ""))
+
+    score = 0
+    if lead.get("business"):
+        score += 1
+    if lead.get("offer"):
+        score += 1
+    if vertical in _HIGH_VALUE_VERTICALS:
+        score += 1
+    if is_ghana_mobile(str(lead.get("phone") or "")):
+        score += 1
+    score = min(score, 5)
+
+    update = _cloud_patch("/api/waitlist/lead", {"id": lead_id, "score": score, "vertical": vertical})
+    if not update.get("ok"):
+        return {"ok": False, "error": update.get("error", "update failed")}
+    return {"ok": True, "id": lead_id, "score": score, "vertical": vertical, "engine": engine}
 
 _DEFAULT_ROADMAP = {
     "goal": "Become agentic: export -> analyze -> engage -> learn",
@@ -220,6 +356,9 @@ header::after{content:'';position:absolute;inset:0;background:radial-gradient(64
 .wl-st{display:inline-block;border-radius:999px;padding:.24rem .68rem;font-size:.7rem;font-weight:700;cursor:pointer;border:none;color:#fff;min-width:84px;text-align:center;transition:transform .12s ease,filter .12s ease}
 .wl-st:hover{transform:translateY(-1px);filter:brightness(1.08)}
 .wl-st.waiting{background:#94a3b8}.wl-st.invited{background:#2563eb}.wl-st.onboarded{background:#d97706}.wl-st.paid{background:#059669}.wl-st.dismissed{background:#64748b}
+.wl-ai{display:inline-block;margin-left:.45rem;border:none;border-radius:6px;padding:.16rem .5rem;font-size:.62rem;font-weight:800;background:#7c3aed;color:#fff;cursor:pointer;vertical-align:middle;transition:transform .12s ease,filter .12s ease}
+.wl-ai:hover:not(:disabled){transform:translateY(-1px);filter:brightness(1.12)}
+.wl-ai:disabled{opacity:.55;cursor:wait}
 .wl-score{font-weight:800}
 .rm-steps{display:none;margin:.55rem 0 0;padding-left:1.25rem;font-size:.78rem;color:var(--mut)}
 .rm-steps.open{display:block}
@@ -377,6 +516,7 @@ tbody tr{transition:background .12s ease}
     <div class="controls">
       <div class="search" style="max-width:none;flex:1"><input type="search" id="wlq" placeholder="Search waitlist (name, business, phone, offer)…" style="width:100%"></div>
       <button class="btn" id="wlExport" style="background:var(--green);color:#fff;border:none;border-radius:10px;padding:.6rem 1.1rem;font-weight:700;cursor:pointer">Export CSV</button>
+      <button class="btn" id="wlRescoreAll" style="background:#2563eb;color:#fff;border:none;border-radius:10px;padding:.6rem 1.1rem;font-weight:700;cursor:pointer">AI re-score all waiting</button>
     </div>
     <div class="tablewrap" id="wlTable"></div>
   </div>
@@ -703,7 +843,8 @@ function renderWaitlist(){
   var html='<table><tr><th>#</th><th>Name</th><th>Business</th><th>Phone</th><th>Offer</th><th>Source</th><th>Score</th><th>Status</th><th>Date</th></tr>';
   rows.forEach(function(l){
     html+='<tr><td>'+l.position+'</td><td>'+esc(l.name)+'</td><td>'+esc(l.business||'—')+'</td><td>'+esc(l.phone)+'</td><td class="mut">'+esc(l.offer||'—')+'</td><td>'+esc(l.source||'direct')+'</td>'+
-      '<td><span class="wl-score" style="color:'+(l.score>=4?'#059669':(l.score>=2?'#d97706':'#94a3b8'))+'">'+l.score+'/5</span></td>'+
+      '<td><span class="wl-score" style="color:'+(l.score>=4?'#059669':(l.score>=2?'#d97706':'#94a3b8'))+'">'+l.score+'/5</span>'+
+        '<button class="wl-ai" data-id="'+esc(l.id)+'" title="Re-classify with AI">AI</button></td>'+
       '<td>'+wlStatusPill(l.status,l.id)+'</td><td class="mut">'+new Date(l.ts).toLocaleDateString()+'</td></tr>';
   });
   get('wlTable').innerHTML=html||'<div class="mut">No matches</div>';
@@ -714,6 +855,17 @@ function renderWaitlist(){
         .then(function(r){return r.json();}).then(function(res){if(res.ok){renderWaitlist();buildWaitlist();}});
     });
   });
+  Array.prototype.forEach.call(document.querySelectorAll('#wlTable .wl-ai'),function(btn){
+    btn.addEventListener('click',function(){
+      var id=btn.getAttribute('data-id');
+      btn.disabled=true;btn.textContent='…';
+      fetch('/api/waitlist/rescore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})})
+        .then(function(r){return r.json();}).then(function(res){
+          if(!res.ok)alert('Rescore failed: '+(res.error||'unknown'));
+          renderWaitlist();buildWaitlist();
+        }).catch(function(){btn.disabled=false;btn.textContent='AI';alert('Rescore failed');});
+    });
+  });
 }
 get('wlq').addEventListener('input',renderWaitlist);
 get('wlExport').addEventListener('click',function(){
@@ -721,6 +873,21 @@ get('wlExport').addEventListener('click',function(){
   WL_DATA.forEach(function(l){rows.push([l.position,l.name,l.business,l.phone,l.offer,l.source,l.score,l.status,new Date(l.ts).toISOString().slice(0,10)]);});
   var csv=rows.map(function(r){return r.map(function(v){return '"'+String(v==null?'':v).replace(/"/g,'""')+'"';}).join(',');}).join('\n');
   var a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent('\ufeff'+csv);a.download='waitlist.csv';a.click();
+});
+get('wlRescoreAll').addEventListener('click',function(){
+  var waiting=WL_DATA.filter(function(l){return l.status==='waiting';});
+  if(!waiting.length){alert('No leads in waiting status');return;}
+  if(!confirm('Re-score '+waiting.length+' waiting lead(s) with AI? This can take ~15s each.'))return;
+  var btn=get('wlRescoreAll');btn.disabled=true;btn.textContent='Scoring '+waiting.length+'…';
+  var i=0;
+  function next(){
+    if(i>=waiting.length){btn.disabled=false;btn.textContent='AI re-score all waiting';buildWaitlist();alert('Done');return;}
+    fetch('/api/waitlist/rescore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:waiting[i].id})})
+      .then(function(r){return r.json();})
+      .then(function(res){i++;btn.textContent='Scoring '+(waiting.length-i)+'…';next();})
+      .catch(function(){i++;btn.textContent='Scoring '+(waiting.length-i)+'…';next();});
+  }
+  next();
 });
 var STATUSES=['planned','in_progress','done'];
 var NEXT_ST={'planned':'in_progress','in_progress':'done','done':'planned'};
@@ -855,6 +1022,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             self._send("application/json; charset=utf-8",
                        json.dumps(_cloud_post("/api/waitlist/status", payload)).encode("utf-8"))
+        elif path == "/api/waitlist/rescore":
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length).decode("utf-8")
+            try:
+                payload = json.loads(raw)
+            except (ValueError, TypeError):
+                self.send_error(400)
+                return
+            self._send("application/json; charset=utf-8",
+                       json.dumps(rescore_lead(payload)).encode("utf-8"))
         else:
             self.send_error(404)
 

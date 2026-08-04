@@ -8,6 +8,7 @@ CREATE TABLE leads (
   source TEXT DEFAULT 'direct',
   status TEXT DEFAULT 'waiting',   -- waiting | invited | onboarded | paid | dismissed
   score INTEGER DEFAULT 0,
+  vertical TEXT DEFAULT '',
   ip TEXT DEFAULT '',
   ua TEXT DEFAULT '',
   visitor_id TEXT DEFAULT '',
