@@ -2,6 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "mywa",
   "main": "src/api.js",
+  "account_id": "4039696cf86114b111be5cadb164a3a9",
   "compatibility_date": "2026-08-01",
   "assets": { "directory": "public", "binding": "ASSETS" },
   "d1_databases": [
