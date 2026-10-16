@@ -49,3 +49,5 @@ cloud/.dev.vars
 *.swp
 .DS_Store
 Thumbs.db
+
+.omo/
