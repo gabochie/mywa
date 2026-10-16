@@ -103,3 +103,16 @@ Live: https://mywa.gabochie.com — waitlist + GHS 999 founders pricing, MoMo.
 
 ## Case Study — Dead groups to pipeline
 Problem: 5k contacts stuck in WhatsApp. Build: Python CLI + CF Worker + D1, E164 dedupe. Result: 3 segmented lists in 1 command. Service: $900 in 7 days.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    S[WhatsApp exports<br/>msgstore / VCF / ADB] --> CLI[Python CLI<br/>zero deps]
+    CLI --> N[Normalize E.164]
+    N --> D[Dedupe]
+    D --> G[Segment + score]
+    G --> OUT[contacts.csv / .vcf]
+    OUT --> W[Cloudflare Worker + D1<br/>dashboard + waitlist]
+    W --> U[Sales team]
+```
