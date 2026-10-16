@@ -9,10 +9,16 @@ import csv
 import io
 import json
 import os
+import threading
+from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
+from .callerid import build_directory, enrich as caller_enrich
+from .exporters import export_csv, export_json, export_report, export_vcf
+from .ingest import ingest
 from .revenue import RevenueAgent
+from .segmenter import deduplicate, opportunities, segment
 
 _STATE_DIR = os.environ.get(
     "MYWA_STATE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "state")
@@ -121,6 +127,74 @@ def is_ghana_mobile(phone: str) -> bool:
     if len(digits) == 10 and digits.startswith("0"):
         return digits[1] in "5217"
     return False
+
+
+_UPLOAD_ALLOWED_EXTS = {".db", ".vcf", ".csv", ".tsv"}
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+_UPLOAD_LOCK = threading.Lock()
+
+
+def _parse_multipart(raw: bytes, content_type: str) -> dict[str, bytes]:
+    """Parse a multipart/form-data body into {field_name: bytes}.
+
+    The file part's original filename (if any) is stored under the special
+    "filename" key. Uses stdlib email.parser (no cgi). Returns {} for
+    non-multipart or unparseable input.
+    """
+    if not raw or "multipart/form-data" not in (content_type or ""):
+        return {}
+    # The raw HTTP body starts with the boundary line; its Content-Type header
+    # lives in the request line, so synthesize one for the email parser.
+    wrapped = (
+        b"Content-Type: " + content_type.encode("ascii", "ignore") + b"\r\n"
+        b"MIME-Version: 1.0\r\n\r\n" + raw
+    )
+    try:
+        msg = BytesParser().parsebytes(wrapped)
+    except Exception:
+        return {}
+    payload = msg.get_payload()
+    if not isinstance(payload, list):
+        return {}
+    result: dict[str, bytes] = {}
+    for part in payload:
+        name = part.get_param("name", header="content-disposition")
+        if not name:
+            continue
+        body = part.get_payload(decode=True)
+        result[name] = body or b""
+        filename = part.get_filename()
+        if filename:
+            result["filename"] = filename
+    return result
+
+
+def _validate_upload(filename: str, size: int) -> tuple[bool, str]:
+    """Validate an upload; returns (ok, safe_name_or_reason).
+
+    Accepts only {.db, .vcf, .csv, .tsv}, caps size at 50 MB, and strips any
+    path components from the returned name.
+    """
+    if not filename:
+        return False, "missing file"
+    safe = os.path.basename(filename)
+    ext = os.path.splitext(safe)[1].lower()
+    if not ext or ext not in _UPLOAD_ALLOWED_EXTS:
+        return False, f"unsupported file type: {ext or 'none'} (allowed: .db, .vcf, .csv, .tsv)"
+    if size > _MAX_UPLOAD_BYTES:
+        return False, "file exceeds the 50 MB limit"
+    return True, safe
+
+
+_COUNTRY_NUMBER_TABLE = {
+    "GH": "233", "NG": "234", "ZA": "27", "KE": "254",
+    "TZ": "255", "UG": "256", "EG": "20", "MA": "212",
+    "US": "1", "GB": "44", "IN": "91", "DE": "49", "FR": "33",
+}
+
+
+def _resolve_country_number(code: str) -> str:
+    return _COUNTRY_NUMBER_TABLE.get(code.upper(), code)
 
 
 def _cloud_patch(path: str, payload: dict) -> dict:
@@ -566,6 +640,7 @@ tbody tr{transition:background .12s ease}
       <button class="navbtn" id="navWaitlist"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"></path><path d="M3 6h.01M3 12h.01M3 18h.01"></path></svg>Waitlist</button>
       <button class="navbtn" id="navRoadmap"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"></circle><circle cx="6" cy="18" r="2.4"></circle><line x1="8.4" y1="6" x2="21" y2="6"></line><line x1="8.4" y1="18" x2="14" y2="18"></line><line x1="14" y1="18" x2="14" y2="10"></line><line x1="21" y1="6" x2="21" y2="12"></line></svg>Roadmap</button>
       <button class="navbtn" id="navSettings"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>Settings</button>
+      <button class="navbtn" id="navUpload"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"></path><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"></path></svg>Upload</button>
     </nav>
     <div class="side-foot">
       <span class="live"><i></i> LIVE</span>
@@ -644,6 +719,24 @@ tbody tr{transition:background .12s ease}
     <div class="panel"><h3>Cloud sync</h3><div id="setCloud" class="mut" style="line-height:1.6"></div></div>
     <div class="panel"><h3>Where to get your provider keys</h3>
       <div class="mut" id="setHelp" style="line-height:1.7"></div>
+    </div>
+  </div>
+  <div id="viewUpload" style="display:none">
+    <div class="panel">
+      <h3>Upload contacts</h3>
+      <div class="settings-form">
+        <label>File (.db, .vcf, .csv, .tsv)</label>
+        <input type="file" id="upFile" accept=".db,.vcf,.csv,.tsv">
+        <label>Country code</label>
+        <input type="text" id="upCountry" value="GH" autocomplete="off" spellcheck="false">
+        <label>Opportunity group keywords</label>
+        <input type="text" id="upKeywords" placeholder="real estate, wholesale" autocomplete="off" spellcheck="false">
+        <div class="controls" style="margin-top:.4rem">
+          <button class="btn" id="upGo" style="background:var(--green);color:#fff;border:none;border-radius:10px;padding:.6rem 1.1rem;font-weight:700;cursor:pointer">Upload &amp; process</button>
+        </div>
+        <div id="upStatus" class="mut" style="margin-top:.5rem;line-height:1.5"></div>
+        <div id="upResult" class="mut" style="margin-top:.5rem;line-height:1.5"></div>
+      </div>
     </div>
   </div>
   </div>
@@ -867,9 +960,42 @@ get('navRoadmap').addEventListener('click',function(){switchView('roadmap');buil
 get('navRevenue').addEventListener('click',function(){switchView('revenue');});
 get('navWaitlist').addEventListener('click',function(){switchView('waitlist');});
 get('navSettings').addEventListener('click',function(){switchView('settings');});
+get('navUpload').addEventListener('click',function(){switchView('upload');});
 get('navGroups').addEventListener('click',function(){setNavActive('navGroups');switchView('insights');scrollToId('groups');});
 get('navOpportunities').addEventListener('click',function(){setNavActive('navOpportunities');switchView('insights');if(!get('btnOpp').classList.contains('active')){get('btnOpp').classList.add('active');get('btnOpp').textContent='Showing opportunities';}render();scrollToId('tblwrap');});
 get('navSegments').addEventListener('click',function(){setNavActive('navSegments');switchView('insights');get('fDiaspora').value='1';render();scrollToId('charts');});
+var upBusy=false;
+function refreshData(){
+  return fetch('/api/data').then(function(r){return r.json();}).then(function(d){
+    DATA=d.contacts||[];
+    buildCards();
+    buildTags();
+    ['fActivity','fCarrier','fCountry','fOrigin'].forEach(function(id){fillSelect(id,{fActivity:'activity',fCarrier:'carrier',fCountry:'country',fOrigin:'origin'}[id]);});
+    render();
+  });
+}
+get('upGo').addEventListener('click',function(){
+  if(upBusy)return;
+  var f=get('upFile').files[0];
+  if(!f){get('upStatus').innerHTML='<span style="color:#ef4444">choose a file first</span>';return;}
+  upBusy=true;get('upGo').disabled=true;get('upGo').textContent='Processing…';
+  get('upStatus').textContent='Uploading '+esc(f.name)+' …';
+  get('upResult').textContent='';
+  var fd=new FormData();
+  fd.append('file',f);
+  fd.append('country_code',get('upCountry').value||'GH');
+  fd.append('opportunity_groups',get('upKeywords').value||'');
+  fetch('/api/upload',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(res){
+    upBusy=false;get('upGo').disabled=false;get('upGo').textContent='Upload &amp; process';
+    if(!res.ok){get('upStatus').innerHTML='<span style="color:#ef4444">✗ '+esc(res.error)+'</span>';return;}
+    get('upStatus').innerHTML='<span style="color:var(--green)">✓ '+esc(res.file)+' processed</span>';
+    get('upResult').textContent=res.count+' contacts, '+res.valid+' valid mobile, '+res.hot+' hot, '+res.opportunities+' opportunities';
+    refreshData();
+  }).catch(function(){
+    upBusy=false;get('upGo').disabled=false;get('upGo').textContent='Upload &amp; process';
+    get('upStatus').innerHTML='<span style="color:#ef4444">✗ request failed</span>';
+  });
+});
 function setNavActive(id){
   ['navInsights','navGroups','navOpportunities','navSegments','navRoadmap'].forEach(function(n){get(n).classList.remove('active');});
   get(id).classList.add('active');
@@ -878,12 +1004,13 @@ function scrollToId(id){
   var el=get(id);if(el)el.scrollIntoView({behavior:'smooth',block:'start'});
 }
 function switchView(name){
-  ['navInsights','navRoadmap','navRevenue','navWaitlist','navSettings'].forEach(function(n){get(n).classList.toggle('active',n==='nav'+name.charAt(0).toUpperCase()+name.slice(1));});
+  ['navInsights','navRoadmap','navRevenue','navWaitlist','navSettings','navUpload'].forEach(function(n){get(n).classList.toggle('active',n==='nav'+name.charAt(0).toUpperCase()+name.slice(1));});
   get('viewInsights').style.display=(name==='insights')?'':'none';
   get('viewRoadmap').style.display=(name==='roadmap')?'':'none';
   get('viewRevenue').style.display=(name==='revenue')?'':'none';
   get('viewWaitlist').style.display=(name==='waitlist')?'':'none';
   get('viewSettings').style.display=(name==='settings')?'':'none';
+  get('viewUpload').style.display=(name==='upload')?'':'none';
   if(name==='revenue')buildRevenue();
   if(name==='waitlist')buildWaitlist();
   if(name==='settings')buildSettings();
@@ -1111,6 +1238,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_json(self, status, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
         if path == "/":
@@ -1214,6 +1349,68 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.rfile.read(length)
             self._send("application/json; charset=utf-8",
                        json.dumps(test_freellmapi()).encode("utf-8"))
+        elif path == "/api/upload":
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                self._send_json(400, {"ok": False, "error": "bad content length"})
+                return
+            if length > _MAX_UPLOAD_BYTES:
+                self._send_json(413, {"ok": False, "error": "file exceeds the 50 MB limit"})
+                return
+            raw = self.rfile.read(length)
+            fields = _parse_multipart(raw, self.headers.get("Content-Type") or "")
+            file_bytes = fields.get("file")
+            filename = fields.get("filename") or ""
+            if file_bytes is None or not filename:
+                self._send_json(400, {"ok": False, "error": "missing file field"})
+                return
+            ok, safe_name = _validate_upload(filename, len(file_bytes))
+            if not ok:
+                self._send_json(400, {"ok": False, "error": safe_name})
+                return
+            uploads_dir = os.path.join(_STATE_DIR, "uploads")
+            os.makedirs(uploads_dir, exist_ok=True)
+            saved_path = os.path.join(uploads_dir, safe_name)
+            with open(saved_path, "wb") as fh:
+                fh.write(file_bytes)
+
+            country_code = (fields.get("country_code") or b"GH").decode("utf-8", "ignore").strip() or "GH"
+            country_number = _resolve_country_number(country_code)
+            keywords_raw = (fields.get("opportunity_groups") or b"").decode("utf-8", "ignore")
+            keywords = [k.strip() for k in keywords_raw.replace(";", ",").split(",") if k.strip()]
+
+            demo_out = os.path.join(_STATE_DIR, "demo_out")
+            with _UPLOAD_LOCK:
+                raw_contacts = ingest([saved_path])
+                if not raw_contacts:
+                    self._send_json(400, {"ok": False, "error": "no contacts extracted"})
+                    return
+                contacts = deduplicate(raw_contacts, country_number)
+                segmented = segment(contacts, country_number, opportunity_keywords=keywords)
+                cdir = build_directory(contacts)
+                caller_enrich(segmented, cdir)
+                os.makedirs(demo_out, exist_ok=True)
+                export_csv(os.path.join(demo_out, "contacts.csv"), segmented)
+                export_vcf(os.path.join(demo_out, "contacts.vcf"), contacts)
+                export_json(os.path.join(demo_out, "contacts.json"), segmented)
+                opps = opportunities(segmented, keywords)
+                opps_sorted = sorted(
+                    opps,
+                    key=lambda s: (s.activity != "hot", s.activity != "warm",
+                                   -s.contact.msg_count),
+                )
+                export_csv(os.path.join(demo_out, "opportunities.csv"), opps_sorted)
+                export_report(os.path.join(demo_out, "report.html"), segmented, opps_sorted)
+                DashboardHandler.data = load_data(demo_out)
+            self._send_json(200, {
+                "ok": True,
+                "count": len(contacts),
+                "valid": sum(1 for s in segmented if s.valid),
+                "hot": sum(1 for s in segmented if s.activity == "hot"),
+                "opportunities": len(opps_sorted),
+                "file": safe_name,
+            })
         else:
             self.send_error(404)
 

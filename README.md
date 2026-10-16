@@ -97,3 +97,9 @@ your contacts app and point the tool at that instead.
 python tools\make_testdata.py     # generate synthetic msgstore/wa/vcf/tsv
 python -m mywa -i testdata --opportunity-groups "real estate, wholesale, founders" --out out
 ```
+
+## Live Demo ✅ Verified Oct 16 2026
+Live: https://mywa.gabochie.com — waitlist + GHS 999 founders pricing, MoMo.
+
+## Case Study — Dead groups to pipeline
+Problem: 5k contacts stuck in WhatsApp. Build: Python CLI + CF Worker + D1, E164 dedupe. Result: 3 segmented lists in 1 command. Service: $900 in 7 days.
